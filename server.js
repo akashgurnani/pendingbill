@@ -2,12 +2,10 @@ const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const bodyParser = require("body-parser");
 const fs = require("fs");
-const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json({ limit: "5mb" }));
 app.use("/images", express.static("images"));
 
@@ -34,11 +32,11 @@ app.get("/", (req, res) => {
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Store Barcode Scanner</title>
+<title>Barcode Scanner</title>
 <script src="https://unpkg.com/html5-qrcode"></script>
 <style>
 body { font-family: Arial; padding: 12px; }
-input, button { width: 100%; padding: 12px; margin-top: 8px; font-size: 16px; }
+input, button { width: 100%; padding: 12px; margin-top: 8px; }
 #reader { margin-top: 10px; }
 .card { border: 1px solid #ccc; padding: 8px; margin-top: 8px; }
 img { max-width: 100%; }
@@ -54,6 +52,8 @@ img { max-width: 100%; }
 <button onclick="clearCustomer()">Clear Customer</button>
 
 <div id="reader"></div>
+
+<video id="video" autoplay playsinline style="display:none;"></video>
 
 <div id="confirm" style="display:none;">
   <p><b>Barcode:</b> <span id="code"></span></p>
@@ -76,6 +76,7 @@ ${r.barcode}<br>
 const store = document.getElementById("store");
 const name = document.getElementById("name");
 const phone = document.getElementById("phone");
+const video = document.getElementById("video");
 
 store.value = localStorage.store || "";
 name.value = localStorage.name || "";
@@ -88,13 +89,17 @@ phone.oninput = () => localStorage.phone = phone.value;
 function clearCustomer() {
   localStorage.removeItem("name");
   localStorage.removeItem("phone");
-  name.value = phone.value = "";
+  name.value = "";
+  phone.value = "";
 }
+
+navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+  .then(stream => video.srcObject = stream);
 
 let scannedCode = "";
 let imageData = "";
 
-function onScanSuccess(text, result) {
+function onScanSuccess(text) {
   if (!store.value || !name.value || !phone.value) {
     alert("Enter store, name and phone");
     return;
@@ -104,9 +109,9 @@ function onScanSuccess(text, result) {
   document.getElementById("code").innerText = text;
 
   const canvas = document.createElement("canvas");
-  canvas.width = result.video.videoWidth;
-  canvas.height = result.video.videoHeight;
-  canvas.getContext("2d").drawImage(result.video, 0, 0);
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
   imageData = canvas.toDataURL("image/jpeg");
 
   document.getElementById("preview").src = imageData;
@@ -147,13 +152,13 @@ app.post("/add", (req, res) => {
   const { store, name, phone, barcode, image } = req.body;
   const ts = new Date().toISOString().replace("T", " ").substring(0, 19);
 
-  const imgName = `images/${Date.now()}.jpg`;
-  fs.writeFileSync(imgName, image.split(",")[1], "base64");
+  const imgPath = `images/${Date.now()}.jpg`;
+  fs.writeFileSync(imgPath, image.split(",")[1], "base64");
 
   db.run(
     `INSERT INTO records (timestamp, store_code, name, phone, barcode, image_path)
      VALUES (?,?,?,?,?,?)`,
-    [ts, store, name, phone, barcode, imgName],
+    [ts, store, name, phone, barcode, imgPath],
     () => res.sendStatus(200)
   );
 });
