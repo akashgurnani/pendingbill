@@ -57,6 +57,15 @@ input, button { width:100%; padding:12px; margin-top:8px; }
 .customer { border:1px solid #ccc; padding:10px; margin-top:10px; }
 .scans { display:none; margin-top:10px; }
 img { max-width:100%; margin-top:5px; }
+.modal {
+  display:none; position:fixed; top:0; left:0;
+  width:100%; height:100%; background:rgba(0,0,0,0.6);
+}
+.modal-content {
+  background:#fff; margin:15% auto; padding:15px;
+  width:90%; max-width:400px;
+}
+.delete { color:red; margin-top:5px; display:block; }
 </style>
 </head>
 <body>
@@ -71,8 +80,17 @@ img { max-width:100%; margin-top:5px; }
 <div id="reader"></div>
 <video id="video" autoplay playsinline style="display:none"></video>
 
-<hr>
+<!-- CONFIRM MODAL -->
+<div id="modal" class="modal">
+  <div class="modal-content">
+    <p><b>Barcode:</b> <span id="modalCode"></span></p>
+    <img id="modalImg">
+    <button onclick="confirmSave()">Confirm</button>
+    <button onclick="closeModal()">Cancel</button>
+  </div>
+</div>
 
+<hr>
 <h4>Customers</h4>
 
 ${customers.map(c => `
@@ -89,6 +107,7 @@ const store = document.getElementById("store");
 const name = document.getElementById("name");
 const phone = document.getElementById("phone");
 const video = document.getElementById("video");
+const modal = document.getElementById("modal");
 
 store.value = localStorage.store || "";
 name.value = localStorage.name || "";
@@ -107,6 +126,46 @@ function clearCustomer() {
 navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" } })
   .then(s => video.srcObject = s);
 
+let pendingBarcode = "";
+let pendingImage = "";
+
+function onScanSuccess(code) {
+  if (!store.value || !name.value || !phone.value) {
+    alert("Enter store, name and phone");
+    return;
+  }
+
+  pendingBarcode = code;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  pendingImage = canvas.toDataURL("image/jpeg");
+
+  document.getElementById("modalCode").innerText = code;
+  document.getElementById("modalImg").src = pendingImage;
+  modal.style.display = "block";
+}
+
+function closeModal() {
+  modal.style.display = "none";
+}
+
+function confirmSave() {
+  fetch("/scan", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({
+      store: store.value,
+      name: name.value,
+      phone: phone.value,
+      barcode: pendingBarcode,
+      image: pendingImage
+    })
+  }).then(() => location.reload());
+}
+
 function toggle(id) {
   const div = document.getElementById("scans-" + id);
   if (div.innerHTML === "") {
@@ -115,30 +174,6 @@ function toggle(id) {
       .then(html => div.innerHTML = html);
   }
   div.style.display = div.style.display === "none" ? "block" : "none";
-}
-
-function onScanSuccess(code) {
-  if (!store.value || !name.value || !phone.value) {
-    alert("Enter store, name and phone");
-    return;
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext("2d").drawImage(video, 0, 0);
-
-  fetch("/scan", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({
-      store: store.value,
-      name: name.value,
-      phone: phone.value,
-      barcode: code,
-      image: canvas.toDataURL("image/jpeg")
-    })
-  }).then(() => location.reload());
 }
 
 new Html5Qrcode("reader").start(
@@ -154,7 +189,7 @@ new Html5Qrcode("reader").start(
   });
 });
 
-/* ---------- SCANS VIEW ---------- */
+/* ---------- LIST SCANS ---------- */
 app.get("/scans/:id", (req, res) => {
   db.all(
     "SELECT * FROM scans WHERE customer_id=? ORDER BY id DESC",
@@ -164,8 +199,23 @@ app.get("/scans/:id", (req, res) => {
 <div>
 <b>${r.barcode}</b><br>
 <img src="/${r.image_path}">
+<a class="delete" href="/delete-scan/${r.id}">Delete</a>
 </div>
 `).join(""));
+    }
+  );
+});
+
+/* ---------- DELETE SCAN ---------- */
+app.get("/delete-scan/:id", (req, res) => {
+  db.get(
+    "SELECT image_path FROM scans WHERE id=?",
+    [req.params.id],
+    (err, row) => {
+      if (row && fs.existsSync(row.image_path)) fs.unlinkSync(row.image_path);
+      db.run("DELETE FROM scans WHERE id=?", [req.params.id], () =>
+        res.redirect("/")
+      );
     }
   );
 });
@@ -179,6 +229,7 @@ app.post("/scan", (req, res) => {
     "SELECT id FROM customers WHERE store_code=? AND name=? AND phone=?",
     [store, name, phone],
     (err, customer) => {
+
       const imgPath = `images/${Date.now()}.jpg`;
       fs.writeFileSync(imgPath, image.split(",")[1], "base64");
 
