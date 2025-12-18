@@ -3,7 +3,7 @@ const sqlite3 = require("sqlite3").verbose();
 const bodyParser = require("body-parser");
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 app.use(bodyParser.urlencoded({ extended: false }));
 
@@ -30,7 +30,7 @@ app.get("/", (req, res) => {
 <script src="https://unpkg.com/html5-qrcode"></script>
 <style>
 body { font-family: Arial; padding: 15px; }
-input, button { width: 100%; padding: 12px; margin-top: 10px; font-size: 16px; }
+input { width: 100%; padding: 12px; margin-top: 10px; font-size: 16px; }
 #reader { width: 100%; margin-top: 15px; }
 .card { border: 1px solid #ddd; padding: 10px; margin-top: 10px; }
 .small { font-size: 12px; color: #555; }
@@ -40,11 +40,10 @@ input, button { width: 100%; padding: 12px; margin-top: 10px; font-size: 16px; }
 
 <h2>📱 Customer Barcode Scanner</h2>
 
-<input id="name" placeholder="Customer Name" required>
-<input id="phone" placeholder="Phone Number" required>
+<input id="name" placeholder="Customer Name">
+<input id="phone" placeholder="Phone Number">
 
 <div id="reader"></div>
-
 <div id="status" class="small"></div>
 
 <h3>Recent Scans</h3>
@@ -59,8 +58,6 @@ ${rows.map(r => `
 `).join("")}
 
 <script>
-const status = document.getElementById("status");
-
 function onScanSuccess(text) {
   const name = document.getElementById("name").value;
   const phone = document.getElementById("phone").value;
@@ -70,15 +67,13 @@ function onScanSuccess(text) {
     return;
   }
 
-  fetch('/add', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `name=${encodeURIComponent(name)}&phone=${encodeURIComponent(phone)}&barcode=${encodeURIComponent(text)}`
-  }).then(() => {
-    status.innerText = "✅ Saved: " + text;
-    navigator.vibrate && navigator.vibrate(100);
-    setTimeout(() => location.reload(), 500);
-  });
+  fetch("/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "name=" + encodeURIComponent(name) +
+          "&phone=" + encodeURIComponent(phone) +
+          "&barcode=" + encodeURIComponent(text)
+  }).then(() => location.reload());
 }
 
 new Html5Qrcode("reader").start(
@@ -109,4 +104,6 @@ app.get("/delete/:id", (req, res) => {
   db.run("DELETE FROM records WHERE id=?", req.params.id, () => res.redirect("/"));
 });
 
-app.listen(PORT, () => console.log(`Running on http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log("Running on port " + PORT);
+});
