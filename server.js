@@ -13,38 +13,55 @@ if (!fs.existsSync("images")) fs.mkdirSync("images");
 
 const db = new sqlite3.Database("data.db");
 
+/* ---------- DB ---------- */
 db.run(`
-CREATE TABLE IF NOT EXISTS records (
+CREATE TABLE IF NOT EXISTS customers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  timestamp TEXT,
   store_code TEXT,
   name TEXT,
   phone TEXT,
-  barcode TEXT,
-  image_path TEXT
+  created_at TEXT
 )
 `);
 
+db.run(`
+CREATE TABLE IF NOT EXISTS scans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER,
+  barcode TEXT,
+  image_path TEXT,
+  scanned_at TEXT
+)
+`);
+
+/* ---------- UI ---------- */
 app.get("/", (req, res) => {
-  db.all("SELECT * FROM records ORDER BY id DESC", (err, rows) => {
+  db.all(`
+    SELECT c.*, COUNT(s.id) AS total_scans
+    FROM customers c
+    LEFT JOIN scans s ON s.customer_id = c.id
+    GROUP BY c.id
+    ORDER BY c.id DESC
+  `, (err, customers) => {
+
     res.send(`
 <!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Barcode Scanner</title>
+<title>Customer Scanner</title>
 <script src="https://unpkg.com/html5-qrcode"></script>
 <style>
 body { font-family: Arial; padding: 12px; }
-input, button { width: 100%; padding: 12px; margin-top: 8px; }
-#reader { margin-top: 10px; }
-.card { border: 1px solid #ccc; padding: 8px; margin-top: 8px; }
-img { max-width: 100%; }
+input, button { width:100%; padding:12px; margin-top:8px; }
+.customer { border:1px solid #ccc; padding:10px; margin-top:10px; }
+.scans { display:none; margin-top:10px; }
+img { max-width:100%; margin-top:5px; }
 </style>
 </head>
 <body>
 
-<h3>📦 Store Barcode Scanner</h3>
+<h3>📦 Store Scanner</h3>
 
 <input id="store" placeholder="Store Code">
 <input id="name" placeholder="Customer Name">
@@ -52,24 +69,19 @@ img { max-width: 100%; }
 <button onclick="clearCustomer()">Clear Customer</button>
 
 <div id="reader"></div>
+<video id="video" autoplay playsinline style="display:none"></video>
 
-<video id="video" autoplay playsinline style="display:none;"></video>
+<hr>
 
-<div id="confirm" style="display:none;">
-  <p><b>Barcode:</b> <span id="code"></span></p>
-  <img id="preview">
-  <button onclick="confirmSave()">Confirm Save</button>
+<h4>Customers</h4>
+
+${customers.map(c => `
+<div class="customer" onclick="toggle(${c.id})">
+<b>${c.store_code}</b><br>
+${c.name} (${c.phone})<br>
+🧾 ${c.total_scans} scans
 </div>
-
-<h4>Recent</h4>
-
-${rows.map(r => `
-<div class="card">
-<b>${r.store_code}</b><br>
-${r.name} (${r.phone})<br>
-${r.barcode}<br>
-<img src="${r.image_path}">
-</div>
+<div class="scans" id="scans-${c.id}"></div>
 `).join("")}
 
 <script>
@@ -89,55 +101,49 @@ phone.oninput = () => localStorage.phone = phone.value;
 function clearCustomer() {
   localStorage.removeItem("name");
   localStorage.removeItem("phone");
-  name.value = "";
-  phone.value = "";
+  name.value = phone.value = "";
 }
 
-navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-  .then(stream => video.srcObject = stream);
+navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" } })
+  .then(s => video.srcObject = s);
 
-let scannedCode = "";
-let imageData = "";
+function toggle(id) {
+  const div = document.getElementById("scans-" + id);
+  if (div.innerHTML === "") {
+    fetch("/scans/" + id)
+      .then(r => r.text())
+      .then(html => div.innerHTML = html);
+  }
+  div.style.display = div.style.display === "none" ? "block" : "none";
+}
 
-function onScanSuccess(text) {
+function onScanSuccess(code) {
   if (!store.value || !name.value || !phone.value) {
     alert("Enter store, name and phone");
     return;
   }
 
-  scannedCode = text;
-  document.getElementById("code").innerText = text;
-
   const canvas = document.createElement("canvas");
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   canvas.getContext("2d").drawImage(video, 0, 0);
-  imageData = canvas.toDataURL("image/jpeg");
 
-  document.getElementById("preview").src = imageData;
-  document.getElementById("confirm").style.display = "block";
-}
-
-function confirmSave() {
-  fetch("/add", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+  fetch("/scan", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({
       store: store.value,
       name: name.value,
       phone: phone.value,
-      barcode: scannedCode,
-      image: imageData
+      barcode: code,
+      image: canvas.toDataURL("image/jpeg")
     })
-  }).then(() => {
-    document.getElementById("confirm").style.display = "none";
-    location.reload();
-  });
+  }).then(() => location.reload());
 }
 
 new Html5Qrcode("reader").start(
-  { facingMode: "environment" },
-  { fps: 10, qrbox: 250 },
+  { facingMode:"environment" },
+  { fps:10, qrbox:250 },
   onScanSuccess
 );
 </script>
@@ -148,19 +154,54 @@ new Html5Qrcode("reader").start(
   });
 });
 
-app.post("/add", (req, res) => {
-  const { store, name, phone, barcode, image } = req.body;
-  const ts = new Date().toISOString().replace("T", " ").substring(0, 19);
-
-  const imgPath = `images/${Date.now()}.jpg`;
-  fs.writeFileSync(imgPath, image.split(",")[1], "base64");
-
-  db.run(
-    `INSERT INTO records (timestamp, store_code, name, phone, barcode, image_path)
-     VALUES (?,?,?,?,?,?)`,
-    [ts, store, name, phone, barcode, imgPath],
-    () => res.sendStatus(200)
+/* ---------- SCANS VIEW ---------- */
+app.get("/scans/:id", (req, res) => {
+  db.all(
+    "SELECT * FROM scans WHERE customer_id=? ORDER BY id DESC",
+    [req.params.id],
+    (err, rows) => {
+      res.send(rows.map(r => `
+<div>
+<b>${r.barcode}</b><br>
+<img src="/${r.image_path}">
+</div>
+`).join(""));
+    }
   );
 });
 
-app.listen(PORT, () => console.log("Running on port", PORT));
+/* ---------- SAVE SCAN ---------- */
+app.post("/scan", (req, res) => {
+  const { store, name, phone, barcode, image } = req.body;
+  const now = new Date().toISOString();
+
+  db.get(
+    "SELECT id FROM customers WHERE store_code=? AND name=? AND phone=?",
+    [store, name, phone],
+    (err, customer) => {
+      const imgPath = `images/${Date.now()}.jpg`;
+      fs.writeFileSync(imgPath, image.split(",")[1], "base64");
+
+      if (customer) {
+        db.run(
+          "INSERT INTO scans (customer_id, barcode, image_path, scanned_at) VALUES (?,?,?,?)",
+          [customer.id, barcode, imgPath, now]
+        );
+      } else {
+        db.run(
+          "INSERT INTO customers (store_code, name, phone, created_at) VALUES (?,?,?,?)",
+          [store, name, phone, now],
+          function () {
+            db.run(
+              "INSERT INTO scans (customer_id, barcode, image_path, scanned_at) VALUES (?,?,?,?)",
+              [this.lastID, barcode, imgPath, now]
+            );
+          }
+        );
+      }
+      res.sendStatus(200);
+    }
+  );
+});
+
+app.listen(PORT, () => console.log("Running on", PORT));
